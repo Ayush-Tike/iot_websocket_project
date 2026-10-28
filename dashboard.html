@@ -1,0 +1,316 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IoT Real-Time Sensor Dashboard</title>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #172033;
+    }
+
+    header {
+      background: #14213d;
+      color: white;
+      text-align: center;
+      padding: 28px 16px;
+    }
+
+    header h1 { margin: 0 0 10px; }
+    header p { margin: 0; color: #cbd5e1; }
+
+    main {
+      max-width: 850px;
+      margin: 30px auto;
+      padding: 0 18px;
+    }
+
+    #status {
+      text-align: center;
+      font-weight: bold;
+      margin-bottom: 12px;
+      color: #b45309;
+    }
+
+    #connectionInfo {
+      text-align: center;
+      font-size: 13px;
+      color: #64748b;
+      margin-bottom: 24px;
+      overflow-wrap: anywhere;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+    }
+
+    .card {
+      background: white;
+      padding: 28px;
+      border-radius: 16px;
+      box-shadow: 0 4px 14px #00000010;
+      text-align: center;
+    }
+
+    .symbol { font-size: 38px; }
+
+    .card h2 {
+      font-size: 18px;
+      color: #64748b;
+    }
+
+    .value {
+      font-size: 42px;
+      font-weight: bold;
+      margin: 18px 0;
+    }
+
+    .temperature { color: #ea580c; }
+    .humidity { color: #0284c7; }
+
+    .info {
+      margin-top: 22px;
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      line-height: 1.9;
+      overflow-wrap: anywhere;
+    }
+
+    .actions {
+      text-align: center;
+      margin-top: 20px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 20px;
+      background: #14213d;
+      color: white;
+      cursor: pointer;
+      font-size: 15px;
+    }
+
+    button:hover { background: #263b63; }
+
+    footer {
+      text-align: center;
+      color: #64748b;
+      padding: 28px;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>IoT Sensor Monitoring System</h1>
+    <p>Real-Time Sensor Data Sharing Using WebSockets API</p>
+  </header>
+
+  <main>
+    <div id="status">Connecting to server...</div>
+    <div id="connectionInfo">Initializing WebSocket connection</div>
+
+    <section class="cards">
+      <div class="card">
+        <div class="symbol">🌡️</div>
+        <h2>Temperature</h2>
+        <div class="value temperature" id="temperature">-- °C</div>
+        <p>Live sensor reading</p>
+      </div>
+
+      <div class="card">
+        <div class="symbol">💧</div>
+        <h2>Humidity</h2>
+        <div class="value humidity" id="humidity">-- %</div>
+        <p>Live sensor reading</p>
+      </div>
+    </section>
+
+    <section class="info">
+      <strong>Device:</strong> ESP32 + DHT11<br>
+      <strong>Protocol:</strong> WebSocket API<br>
+      <strong>Server:</strong> <span id="serverAddress"></span><br>
+      <strong>Last update:</strong> <span id="lastUpdate">Waiting for data</span><br>
+      <strong>Messages received:</strong> <span id="messageCount">0</span>
+    </section>
+
+    <div class="actions">
+      <button id="reconnectButton">Reconnect</button>
+    </div>
+  </main>
+
+  <footer>
+    IoT Academic Project | Real-Time Sensor Data Sharing
+  </footer>
+
+  <script>
+    // Must match SERVER_IP in sensor_client.ino.
+    // Replace this if your computer's IPv4 address changes.
+    const SERVER_IP = "10.220.171.29";
+    const SERVER_PORT = 8765;
+    const serverURL = `ws://${SERVER_IP}:${SERVER_PORT}/`;
+
+    const statusElement = document.getElementById("status");
+    const connectionInfoElement = document.getElementById("connectionInfo");
+    const temperatureElement = document.getElementById("temperature");
+    const humidityElement = document.getElementById("humidity");
+    const lastUpdateElement = document.getElementById("lastUpdate");
+    const messageCountElement = document.getElementById("messageCount");
+
+    document.getElementById("serverAddress").textContent = serverURL;
+
+    let socket = null;
+    let reconnectTimer = null;
+    let manuallyClosed = false;
+    let messageCount = 0;
+
+    function setStatus(message, color) {
+      statusElement.textContent = message;
+      statusElement.style.color = color;
+    }
+
+    function connectWebSocket() {
+      clearTimeout(reconnectTimer);
+      manuallyClosed = false;
+
+      // Avoid opening multiple simultaneous connections.
+      if (socket &&
+          (socket.readyState === WebSocket.OPEN ||
+           socket.readyState === WebSocket.CONNECTING)) {
+        console.log("WebSocket is already open or connecting.");
+        return;
+      }
+
+      setStatus("Connecting to server...", "#b45309");
+      connectionInfoElement.textContent = `Connecting to ${serverURL}`;
+
+      console.log("Opening WebSocket:", serverURL);
+
+      try {
+        socket = new WebSocket(serverURL);
+      } catch (error) {
+        console.error("Could not create WebSocket:", error);
+        setStatus("Could not create WebSocket", "#dc2626");
+        scheduleReconnect();
+        return;
+      }
+
+      socket.onopen = function () {
+        console.log("WebSocket opened successfully:", serverURL);
+
+        setStatus("Connected — waiting for sensor data", "#15803d");
+        connectionInfoElement.textContent =
+          "Connection established; waiting for ESP32 readings.";
+      };
+
+      socket.onmessage = function (event) {
+        console.log("Raw message received:", event.data);
+
+        try {
+          const data = JSON.parse(event.data);
+
+          if (
+            typeof data.temperature !== "number" ||
+            typeof data.humidity !== "number" ||
+            !Number.isFinite(data.temperature) ||
+            !Number.isFinite(data.humidity)
+          ) {
+            console.warn("Invalid sensor data structure:", data);
+            return;
+          }
+
+          temperatureElement.textContent =
+            data.temperature.toFixed(1) + " °C";
+
+          humidityElement.textContent =
+            data.humidity.toFixed(1) + " %";
+
+          lastUpdateElement.textContent =
+            new Date().toLocaleTimeString();
+
+          messageCount++;
+          messageCountElement.textContent = messageCount;
+
+          setStatus("Connected — receiving live sensor data", "#15803d");
+          connectionInfoElement.textContent =
+            "Last sensor message received successfully.";
+
+        } catch (error) {
+          console.error("Could not parse incoming message:", error);
+        }
+      };
+
+      socket.onerror = function (event) {
+        console.error("WebSocket error:", event);
+        setStatus("WebSocket error — inspect Console and server logs", "#dc2626");
+      };
+
+      socket.onclose = function (event) {
+        console.warn(
+          "WebSocket closed. Code:",
+          event.code,
+          "Reason:",
+          event.reason || "(no reason supplied)",
+          "Clean:",
+          event.wasClean
+        );
+
+        connectionInfoElement.textContent =
+          `Connection closed (code ${event.code}).`;
+
+        if (!manuallyClosed) {
+          setStatus("Disconnected — reconnecting...", "#dc2626");
+          scheduleReconnect();
+        }
+      };
+    }
+
+    function scheduleReconnect() {
+      if (manuallyClosed || reconnectTimer !== null) return;
+
+      reconnectTimer = setTimeout(function () {
+        reconnectTimer = null;
+        connectWebSocket();
+      }, 2000);
+    }
+
+    function reconnectNow() {
+      manuallyClosed = true;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+
+      if (socket) {
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onopen = null;
+        socket.onmessage = null;
+
+        if (socket.readyState === WebSocket.OPEN ||
+            socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      }
+
+      socket = null;
+      connectWebSocket();
+    }
+
+    document.getElementById("reconnectButton")
+      .addEventListener("click", reconnectNow);
+
+    connectWebSocket();
+  </script>
+</body>
+</html>
+```
